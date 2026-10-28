@@ -1,0 +1,103 @@
+name: IME inlay tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or commit to test
+        required: true
+        default: fix/terminal-ime-inlay-wrap
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ime-inlay-tests-${{ inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - name: Free disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/share/swift \
+            /usr/share/miniconda \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/local/share/chromium \
+            /usr/local/lib/node_modules \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /opt/hostedtoolcache/Ruby \
+            /opt/hostedtoolcache/PyPy \
+            /opt/hostedtoolcache/Python \
+            /opt/hostedtoolcache/go \
+            /opt/hostedtoolcache/node \
+            /opt/microsoft \
+            /opt/google \
+            /imagegeneration \
+            /var/cache/apt/archives
+          sudo apt-get -y clean
+          docker image prune --all --force || true
+          docker builder prune --all --force || true
+          echo "Disk space after cleanup:"
+          df -h /
+
+      - name: Add swap
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile /swapfile
+          sudo fallocate -l 16G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
+      - name: Prepare Bazel directories
+        run: |
+          sudo mkdir -p /mnt/bazel-output /mnt/bazel-disk-cache
+          sudo chown -R "$(id -u):$(id -g)" /mnt/bazel-output /mnt/bazel-disk-cache
+          df -h / /mnt
+          free -h
+
+      - name: Platform editor inlay test
+        run: |
+          ./bazel.cmd --output_user_root=/mnt/bazel-output test //platform/platform-tests:tests_test \
+            --disk_cache=/mnt/bazel-disk-cache \
+            --experimental_disk_cache_gc_max_size=16G \
+            --jobs=4 \
+            --test_output=errors \
+            --test_filter=com.intellij.openapi.editor.impl.EditorInlayTest
+
+      - name: Snapshot inlay test
+        if: always()
+        run: |
+          ./bazel.cmd --output_user_root=/mnt/bazel-output test //platform/platform-tests:tests_test \
+            --disk_cache=/mnt/bazel-disk-cache \
+            --experimental_disk_cache_gc_max_size=16G \
+            --jobs=4 \
+            --test_output=errors \
+            --test_filter=com.intellij.openapi.editor.impl.SnapshotInlayModelTest
+
+      - name: Terminal IME test
+        if: always()
+        run: |
+          ./bazel.cmd --output_user_root=/mnt/bazel-output test //plugins/terminal/tests:tests_test \
+            --disk_cache=/mnt/bazel-disk-cache \
+            --experimental_disk_cache_gc_max_size=16G \
+            --jobs=4 \
+            --test_output=errors \
+            --test_filter=com.intellij.terminal.tests.reworked.frontend.TerminalInputMethodSupportTest
